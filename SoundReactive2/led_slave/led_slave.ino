@@ -1,13 +1,20 @@
+/**
+ * Nerdforge code base from:
+ * https://github.com/hansjny/Natural-Nerd/tree/master/SoundReactive2
+ * GIT nr: 20a0e52 on Jun 2
+ * 
+ */
 
-#define FASTLED_INTERRUPT_RETRY_COUNT 0 
+#define FASTLED_INTERRUPT_RETRY_COUNT 0
 #define FASTLED_ALLOW_INTERRUPTS 0
+
 #include <FastLED.h>
 #include <ESP8266WiFi.h>
-#include <WiFiUDP.h>
+#include <WiFiUdp.h>
 #include "reactive_common.h"
 
 #define LED_PIN 2
-#define NUM_LEDS 144
+#define NUM_LEDS 23
 
 #define MIC_LOW 0
 #define MIC_HIGH 644
@@ -15,9 +22,12 @@
 #define SAMPLE_SIZE 20
 #define LONG_TERM_SAMPLES 250
 #define BUFFER_DEVIATION 400
-#define BUFFER_SIZE 3
+#define BUFFER_SIZE 5
 
 #define LAMP_ID 1
+
+#define DEBUG_PRINTLN(msg) Serial.println(msg);
+
 WiFiUDP UDP;
 
 const char *ssid = "sound_reactive"; // The SSID (name) of the Wi-Fi network you want to connect to
@@ -27,15 +37,16 @@ CRGB leds[NUM_LEDS];
 
 struct averageCounter *samples;
 struct averageCounter *longTermSamples;
-struct averageCounter* sanityBuffer;
+struct averageCounter *sanityBuffer;
 
 float globalHue;
-float globalBrightness = 255;
+float globalBrightness = 1;
 int hueOffset = 120;
 float fadeScale = 1.3;
 float hueIncrement = 0.7;
 
-struct led_command {
+struct led_command
+{
   uint8_t opmode;
   uint32_t data;
 };
@@ -46,19 +57,37 @@ const int heartBeatInterval = 100;
 bool fade = false;
 
 struct led_command cmd;
+
+// function prototypes
 void connectToWifi();
+float fscale(float originalMin, float originalMax, float newBegin, float newEnd, float inputValue, float curve);
+void soundReactive(int analogRaw);
+void allWhite();
+void chillFade();
+void sendHeartBeat();
 
 void setup()
 {
   globalHue = 0;
   samples = new averageCounter(SAMPLE_SIZE);
   longTermSamples = new averageCounter(LONG_TERM_SAMPLES);
-  sanityBuffer    = new averageCounter(BUFFER_SIZE);
-  
-  while(sanityBuffer->setSample(250) == true) {}
-  while (longTermSamples->setSample(200) == true) {}
+  sanityBuffer = new averageCounter(BUFFER_SIZE);
+
+  while (sanityBuffer->setSample(250) == true)
+  {
+  }
+  while (longTermSamples->setSample(200) == true)
+  {
+  }
 
   FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  FastLED.setMaxRefreshRate(50,true);
+  FastLED.setBrightness(globalBrightness);
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = CRGB(0, 0, 0);
+  }
+  FastLED.show();  
 
   Serial.begin(115200); // Start the Serial communication to send messages to the computer
   delay(10);
@@ -74,125 +103,142 @@ void setup()
   UDP.begin(7001);
 }
 
-void sendHeartBeat() {
-    struct heartbeat_message hbm;
-    hbm.client_id = LAMP_ID;
-    hbm.chk = 77777;
-    Serial.println("Sending heartbeat");
-    IPAddress ip(192,168,4,1);
-    UDP.beginPacket(ip, 7171); 
-    int ret = UDP.write((char*)&hbm,sizeof(hbm));
-    printf("Returned: %d, also sizeof hbm: %d \n", ret, sizeof(hbm));
-    UDP.endPacket();
-    lastHeartBeatSent = millis();
+void sendHeartBeat()
+{
+  struct heartbeat_message hbm;
+  hbm.client_id = LAMP_ID;
+  hbm.chk = 77777;
+  //Serial.println("Sending heartbeat");
+  IPAddress ip(192, 168, 200, 255);
+  UDP.beginPacket(ip, 7171);
+  int ret = UDP.write((char *)&hbm, sizeof(hbm));
+  //printf("Returned: %d, also sizeof hbm: %d \n", ret, sizeof(hbm));
+  UDP.endPacket();
+  lastHeartBeatSent = millis();
 }
 
 void loop()
 {
-  if (millis() - lastHeartBeatSent > heartBeatInterval) {
+  if (millis() - lastHeartBeatSent > heartBeatInterval)
+  {
     sendHeartBeat();
   }
 
-
-  
   int packetSize = UDP.parsePacket();
   if (packetSize)
   {
     UDP.read((char *)&cmd, sizeof(struct led_command));
+    //DEBUG_PRINTLN("data received");
     lastReceived = millis();
   }
 
-  if(millis() - lastReceived >= 5000)
+  if (millis() - lastReceived >= 5000)
   {
     connectToWifi();
   }
-    
+
   int opMode = cmd.opmode;
   int analogRaw = cmd.data;
 
-  switch (opMode) {
-    case 1:
-      fade = false;
-      soundReactive(analogRaw);
-      break;
+  switch (opMode)
+  {
+  case 4:
+    fade = false;
+    globalBrightness = analogRaw;
+    FastLED.setBrightness(globalBrightness);
+    //FastLED.show();
+    DEBUG_PRINTLN("BRIGHTNESS CHANGED!!!!!!!!!!!!!!!!!!!!!!111");
+    DEBUG_PRINTLN(globalBrightness);
+    break;
+  case 1:
+    fade = false;    
+    soundReactive(analogRaw);
+    break;
 
-    case 2:
-      fade = false;
-      allWhite();
-      break;
+  case 2:
+    fade = false;
+    allWhite();
+    break;
 
-    case 3:
-      chillFade();
-      break;
-  }
-  
+  case 3:
+    chillFade();
+    break;
+  }  
 }
 
-void allWhite() {
-  for (int i = 0; i < NUM_LEDS; i++) {
+void allWhite()
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
     leds[i] = CRGB(255, 255, 235);
   }
   delay(5);
   FastLED.show();
 }
 
-void chillFade() {
+void chillFade()
+{
   static int fadeVal = 0;
   static int counter = 0;
   static int from[3] = {0, 234, 255};
-  static int to[3]   = {255, 0, 214};
+  static int to[3] = {255, 0, 214};
   static int i, j;
   static double dsteps = 500.0;
   static double s1, s2, s3, tmp1, tmp2, tmp3;
   static bool reverse = false;
-  if (fade == false) {
-    for (int i = 0; i < NUM_LEDS; i++) {
+  if (fade == false)
+  {
+    for (int i = 0; i < NUM_LEDS; i++)
+    {
       leds[i] = CRGB(from[0], from[1], from[2]);
     }
-    s1 = double((to[0] - from[0])) / dsteps; 
-    s2 = double((to[1] - from[1])) / dsteps; 
-    s3 = double((to[2] - from[2])) / dsteps; 
+    s1 = double((to[0] - from[0])) / dsteps;
+    s2 = double((to[1] - from[1])) / dsteps;
+    s3 = double((to[2] - from[2])) / dsteps;
     tmp1 = from[0], tmp2 = from[1], tmp3 = from[2];
     fade = true;
   }
 
-  if (!reverse) 
+  if (!reverse)
   {
     tmp1 += s1;
-    tmp2 += s2; 
-    tmp3 += s3; 
+    tmp2 += s2;
+    tmp3 += s3;
   }
-  else 
+  else
   {
     tmp1 -= s1;
-    tmp2 -= s2; 
-    tmp3 -= s3; 
+    tmp2 -= s2;
+    tmp3 -= s3;
   }
 
   for (j = 0; j < NUM_LEDS; j++)
-    leds[j] = CRGB((int)round(tmp1), (int)round(tmp2), (int)round(tmp3)); 
-  FastLED.show(); 
+    leds[j] = CRGB((int)round(tmp1), (int)round(tmp2), (int)round(tmp3));
+  FastLED.show();
   delay(5);
 
   counter++;
-  if (counter == (int)dsteps) {
+  if (counter == (int)dsteps)
+  {
     reverse = !reverse;
     tmp1 = to[0], tmp2 = to[1], tmp3 = to[2];
     counter = 0;
   }
 }
 
-void soundReactive(int analogRaw) {
+void soundReactive(int analogRaw)
+{
 
- int sanityValue = sanityBuffer->computeAverage();
- if (!(abs(analogRaw - sanityValue) > BUFFER_DEVIATION)) {
+  int sanityValue = sanityBuffer->computeAverage();
+  if (!(abs(analogRaw - sanityValue) > BUFFER_DEVIATION))
+  {
     sanityBuffer->setSample(analogRaw);
- }
+  }
   analogRaw = fscale(MIC_LOW, MIC_HIGH, MIC_LOW, MIC_HIGH, analogRaw, 0.4);
 
   if (samples->setSample(analogRaw))
     return;
-    
+
   uint16_t longTermAverage = longTermSamples->computeAverage();
   uint16_t useVal = samples->computeAverage();
   longTermSamples->setSample(useVal);
@@ -213,7 +259,6 @@ void soundReactive(int analogRaw) {
     }
   }
 
-
   int curshow = fscale(MIC_LOW, MIC_HIGH, 0.0, (float)NUM_LEDS, (float)useVal, 0);
   //int curshow = map(useVal, MIC_LOW, MIC_HIGH, 0, NUM_LEDS)
 
@@ -227,21 +272,21 @@ void soundReactive(int analogRaw) {
     {
       leds[i] = CRGB(leds[i].r / fadeScale, leds[i].g / fadeScale, leds[i].b / fadeScale);
     }
-    
   }
   delay(5);
-  FastLED.show(); 
+  FastLED.show();
 }
 
-void connectToWifi() {
-   WiFi.mode(WIFI_STA);
+void connectToWifi()
+{
+  WiFi.mode(WIFI_STA);
   for (int i = 0; i < NUM_LEDS; i++)
   {
     leds[i] = CHSV(0, 0, 0);
   }
   leds[0] = CRGB(0, 255, 0);
   FastLED.show();
-  
+
   int i = 0;
   while (WiFi.status() != WL_CONNECTED)
   { // Wait for the Wi-Fi to connect
@@ -257,6 +302,7 @@ void connectToWifi() {
   FastLED.show();
   lastReceived = millis();
 }
+
 float fscale(float originalMin, float originalMax, float newBegin, float newEnd, float inputValue, float curve)
 {
 
